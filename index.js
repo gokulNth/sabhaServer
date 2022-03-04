@@ -1,23 +1,49 @@
 const express = require('express');
+const key = require('./config');
 const mysql = require('mysql');
 const parser = require('body-parser');
 const cors = require('cors');
+const md5 = require('md5');
 
 const app = express();
 var myLogger = function (req, res, next) {
   console.log(req.url, req.body, req.params, req.query);
   next();
 };
-app.use([myLogger]);
-app.use(parser.json());
+var canAllowed = function (req, res, next) {
+  if (req.url.includes('/login') || req.url.includes('/api/member')) {
+    next();
+  } else if (req.headers.details) {
+    const id = req.headers.details;
+    let getUser = `select profile from user_list where username = ?;`;
+    db.query(getUser, [id], (err, rows) => {
+      if (rows) {
+        if (canNavigate(rows[0].profile, req.url, id) && md5(`${rows[0].profile}_${id}_${key}`) === req.headers.authorization) {
+          next();
+        } else {
+          res.status(401).send("Unauthorized")
+        }
+      } else {
+        res.status(401).send("Unauthorized")
+      }
+    });
+  } else {
+    res.status(401).send("Unauthorized")
+  }
+}
 app.use(cors());
+app.use([
+  canAllowed,
+  myLogger
+]);
+app.use(parser.json());
 
 const db = mysql.createPool({
   host: 'localhost',
   user: 'root',
   password: '',
-  database: 'dummyData',
-  // database: 'sabhaApp',
+  // database: 'dummyData',
+  database: 'sabhaApp',
 });
 
 app.get('/api/user', (req, res) => {
@@ -39,7 +65,7 @@ app.get('/api/member', (req, res) => {
 
   let searchQuery = `where `;
   const wordList = word.split(',');
-  wordList.forEach((word, index) => {
+  (wordList || []).forEach((word, index) => {
     const searchStr = word.split('%')[0];
     const searchFrom = word.split('%')[1];
     if (wordList.length - 1 !== index) {
@@ -49,7 +75,7 @@ app.get('/api/member', (req, res) => {
     }
   });
 
-  const limitQuery = `limit ${parseInt(limit)}`;
+  const limitQuery = `limit ${limit}`;
 
   let Query = `select * from name_list ${searchQuery} ${sortQuery}`;
   if (limit) {
@@ -59,7 +85,7 @@ app.get('/api/member', (req, res) => {
   }
   db.query(Query, (err, rows) => {
     if (err) {
-      res.status(404).send(err);
+      res.status(404).send("Invalid Request");
     } else {
       res.status(200).send(rows);
     }
@@ -268,14 +294,45 @@ app.post('/api/login', (req, res) => {
   let getUser = `select password, profile, member_name from user_list where username = ?;`;
   db.query(getUser, [userName], (err, rows) => {
     if (rows) {
-      if (password === rows[0].password)
-        res.status(200).json({ member_name: rows[0].member_name, profile: rows[0].profile });
-      res.send('Error Occured').sendStatus(500);
+      let returnResult = {};
+      rows.forEach(i => {
+        if (i.password === password) {
+          returnResult = {
+            member_name: i.member_name,
+            profile: i.profile,
+            id: userName
+          };
+        }
+      });
+      res.statusMessage = JSON.stringify(returnResult)
+      res.sendStatus(200)
     } else {
-      res.send('Error Occured').sendStatus(500);
+      res.sendStatus(500)
     }
   });
 })
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => console.log(`listening on ${port}`));
+
+
+
+function canNavigate(profile, url, id) {
+  if (url.includes(`/member?`) || url.includes(`/child`)) return true;
+  else if (profile === 1) {
+    if (url.includes(`/${id}`)) return true;
+  } else if (profile === 2) {
+    if (url.includes(`/update/vote`) || url.includes('/searchall') || url.includes('/online') || url.includes('/offline')) {
+      return false;
+    } else {
+      return true;
+    }
+  } else if (profile === 3) {
+    if (url.includes(`/update/vote`) || url.includes(`/${id}`) || url.includes('/searchall') || url.includes('/online') || url.includes('/offline')) {
+      return true;
+    }
+  } else if (profile === 4) {
+    return true;
+  }
+  return false;
+}
