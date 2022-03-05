@@ -1,36 +1,10 @@
 const express = require('express');
-const key = require('./config');
-const mysql = require('mysql');
 const parser = require('body-parser');
 const cors = require('cors');
-const md5 = require('md5');
+const { canAllowed, myLogger, db } = require('./config');
+const { constructGetMembersQuery, getQueryVariables, constructAddQuery } = require('./queries');
 
 const app = express();
-var myLogger = function (req, res, next) {
-  console.log(req.url, req.body, req.params, req.query);
-  next();
-};
-var canAllowed = function (req, res, next) {
-  if (req.url.includes('/login') || req.url.includes('/api/member')) {
-    next();
-  } else if (req.headers.details) {
-    const id = req.headers.details;
-    let getUser = `select profile from user_list where username = ?;`;
-    db.query(getUser, [id], (err, rows) => {
-      if (rows) {
-        if (canNavigate(rows[0].profile, req.url, id) && md5(`${rows[0].profile}_${id}_${key}`) === req.headers.authorization) {
-          next();
-        } else {
-          res.status(401).send("Unauthorized")
-        }
-      } else {
-        res.status(401).send("Unauthorized")
-      }
-    });
-  } else {
-    res.status(401).send("Unauthorized")
-  }
-}
 app.use(cors());
 app.use([
   canAllowed,
@@ -38,52 +12,8 @@ app.use([
 ]);
 app.use(parser.json());
 
-const db = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  // database: 'dummyData',
-  database: 'sabhaApp',
-});
-
-app.get('/api/user', (req, res) => {
-  db.query('select * from user_list;', (err, result) => {
-    if (err) {
-      res.status(404).send('Error', err);
-    } else {
-      res.status(200).send(result);
-    }
-  });
-});
-
 app.get('/api/member', (req, res) => {
-  const { sort = 'id%asc', word = '%member_name', limit } = req.query;
-
-  const sortFrom = sort.split('%')[0];
-  const sortBy = sort.split('%')[1];
-  const sortQuery = `order by ${sortFrom} ${sortBy}`;
-
-  let searchQuery = `where `;
-  const wordList = word.split(',');
-  (wordList || []).forEach((word, index) => {
-    const searchStr = word.split('%')[0];
-    const searchFrom = word.split('%')[1];
-    if (wordList.length - 1 !== index) {
-      searchQuery += `${searchFrom} like '%${searchStr}%' and `;
-    } else {
-      searchQuery += `${searchFrom} like '%${searchStr}%' `;
-    }
-  });
-
-  const limitQuery = `limit ${limit}`;
-
-  let Query = `select * from name_list ${searchQuery} ${sortQuery}`;
-  if (limit) {
-    Query = `${Query} ${limitQuery};`;
-  } else {
-    Query = Query + `;`;
-  }
-  db.query(Query, (err, rows) => {
+  db.query(constructGetMembersQuery(req), (err, rows) => {
     if (err) {
       res.status(404).send("Invalid Request");
     } else {
@@ -121,37 +51,6 @@ app.get('/api/child/:id', (req, res) => {
     }
   );
 });
-
-function getQueryVariables(query, condition) {
-  const { sort = 'id%asc', word = '%member_name', limit } = query;
-
-  const sortFrom = sort.split('%')[0];
-  const sortBy = sort.split('%')[1];
-  const sortQuery = `order by ${sortFrom} ${sortBy}`;
-
-  let searchQuery =
-    condition === 'online'
-      ? `where (detail_list.address NOT LIKE '%dindigul%') and `
-      : condition === 'offline'
-        ? `WHERE (detail_list.address IS NULL OR detail_list.address LIKE '%dindigul%') and `
-        : `where `;
-  const wordList = word.split(',');
-  wordList.forEach((word, index) => {
-    const searchStr = word.split('%')[0];
-    let searchFrom = word.split('%')[1];
-    if (searchFrom === 'id') {
-      searchFrom = 'name_list.id';
-    }
-    if (wordList.length - 1 !== index) {
-      searchQuery += `${searchFrom} like '%${searchStr}%' and `;
-    } else {
-      searchQuery += `${searchFrom} like '%${searchStr}%' `;
-    }
-  });
-
-  const limitQuery = limit ? `limit ${limit}` : null;
-  return { sortQuery, limitQuery, searchQuery };
-}
 
 app.get('/api/searchall', (req, res) => {
   const { sortQuery, limitQuery, searchQuery } = getQueryVariables(req.query);
@@ -235,12 +134,7 @@ app.post('/api/add', (req, res) => {
     res.status(422).send('ID is required');
   }
 
-  let NameQuery = `insert into name_list (id, member_name, member_name) values (${req.body.id}, ${req.body.member_name}, ${req.body.father_name});`;
-  let DetailsQuery = `insert into detail_list (id, address, phone, whatsapp, email_id, descendant, marital_status, spouse_name, gher_navu, gothru, dob, photo, custom_field) values (${req.body.id
-    }, ${req.body.address}, ${req.body.phone}, ${req.body.whatsapp}, ${req.body.email_id
-    }, ${req.body.descendant}, ${req.body.marital_status}, ${req.body.spouse_name
-    }, ${req.body.gher_navu}, ${req.body.gothru}, ${req.body.dob}, ${req.body.photo
-    }, ${req.body.custom_field}, ${new Date()});`;
+  const { NameQuery, DetailsQuery } = constructAddQuery(req.body)
 
   db.query(NameQuery, (err, rows) => {
     if (err) {
@@ -294,18 +188,18 @@ app.post('/api/login', (req, res) => {
   let getUser = `select password, profile, member_name from user_list where username = ?;`;
   db.query(getUser, [userName], (err, rows) => {
     if (rows) {
-      let returnResult = {};
       rows.forEach(i => {
         if (i.password === password) {
-          returnResult = {
+          res.statusMessage = JSON.stringify({
             member_name: i.member_name,
             profile: i.profile,
             id: userName
-          };
+          });
+          res.sendStatus(200)
+        } else {
+          res.sendStatus(500)
         }
       });
-      res.statusMessage = JSON.stringify(returnResult)
-      res.sendStatus(200)
     } else {
       res.sendStatus(500)
     }
@@ -314,25 +208,3 @@ app.post('/api/login', (req, res) => {
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => console.log(`listening on ${port}`));
-
-
-
-function canNavigate(profile, url, id) {
-  if (url.includes(`/member?`) || url.includes(`/child`)) return true;
-  else if (profile === 1) {
-    if (url.includes(`/${id}`)) return true;
-  } else if (profile === 2) {
-    if (url.includes(`/update/vote`) || url.includes('/searchall') || url.includes('/online') || url.includes('/offline')) {
-      return false;
-    } else {
-      return true;
-    }
-  } else if (profile === 3) {
-    if (url.includes(`/update/vote`) || url.includes(`/${id}`) || url.includes('/searchall') || url.includes('/online') || url.includes('/offline')) {
-      return true;
-    }
-  } else if (profile === 4) {
-    return true;
-  }
-  return false;
-}
